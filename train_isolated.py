@@ -41,6 +41,7 @@ from sklearn.base import TransformerMixin, BaseEstimator
 from sklearn.pipeline import Pipeline
 from sklearn.svm import SVC
 import joblib
+from joblib import Parallel, delayed
 
 from spectral import Spectral
 from zca import ZCA
@@ -85,6 +86,15 @@ def _extract_spec(fname, fs, encoder):
             return spec
     return _spec_cache[key]
 
+def extract_spec_at(fname, fs, start, stacksize, encoder):
+    spec = _extract_spec(fname, fs, encoder)
+    part = spec[start: start + stacksize]
+    part = np.pad(part,
+                  ((0, stacksize-part.shape[0]),
+                   (0,0)),
+                  'constant')
+    return part.flatten()
+
 
 class IdentityTransform(TransformerMixin, BaseEstimator):
     def fit(self, X, y=None):
@@ -114,11 +124,13 @@ class FeatureLoader(TransformerMixin, BaseEstimator):
     # the spectral encoder needs to be rebuilt
     spec_arg_names = inspect.getargspec(Spectral.__init__).args[1:]
 
-    def __init__(self, stacksize=40, normalize='mvn', **spec_kwargs):
+    def __init__(self, stacksize=40, normalize='mvn', n_jobs=1, **spec_kwargs):
         self.spec_kwargs = spec_kwargs
         if not 'fs' in self.spec_kwargs:
             self.spec_kwargs['fs'] = 16000
         self.fs = spec_kwargs['fs']
+
+        self.n_jobs = n_jobs
 
         self.set_encoder()
 
@@ -174,16 +186,21 @@ class FeatureLoader(TransformerMixin, BaseEstimator):
 
     def get_specs(self, X):
         r = np.empty((X.shape[0], self.n_features*self.stacksize))
-        for ix in xrange(X.shape[0]):
-            fname, start = X[ix][0], int(X[ix][1]*self.fs/self.encoder.fshift)
-            spec = _extract_spec(fname, self.fs, self.encoder)
-            part = spec[start: start+self.stacksize]
-            # pad if too short
-            part = np.pad(part,
-                          ((0, self.stacksize-part.shape[0]),
-                           (0, 0)),
-                          'constant')
-            r[ix] = part.flatten()
+        r = Parallel(n_jobs=self.n_jobs, verbose=verbose)(
+            delayed(extract_spec_at)(X[ix][0], self.fs,
+                                     int(X[ix][1]*self.fs/self.encoder.fshift),
+                                     self.stacksize, self.encoder)
+            for ix in xrange(X.shape[0]))
+        # for ix in xrange(X.shape[0]):
+        #     fname, start = X[ix][0], int(X[ix][1]*self.fs/self.encoder.fshift)
+        #     spec = _extract_spec(fname, self.fs, self.encoder)
+        #     part = spec[start: start+self.stacksize]
+        #     # pad if too short
+        #     part = np.pad(part,
+        #                   ((0, self.stacksize-part.shape[0]),
+        #                    (0, 0)),
+        #                   'constant')
+        #     r[ix] = part.flatten()
         return r
 
     def fit(self, X, y=None):
