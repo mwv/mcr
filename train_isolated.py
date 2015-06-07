@@ -125,7 +125,7 @@ def _extract_features(fname, fs, encoder):
 
 _feat_cache = {}
 def extract_features_at(fname, fs, start, stacksize, encoder, n_noise_fr=0,
-                        buffer_length=0.5):
+                        buffer_length=0.1):
     """Extract features at a certain point in time.
 
     Parameters
