@@ -428,7 +428,6 @@ if __name__ == '__main__':
     with verb_print('preparing pipeline', verbose=verbose):
         pipeline = Pipeline([('features', FeatureLoader(stacksize=stacksize0,
                                                         normalize=normalize0,
-                                                        n_jobs=n_jobs,
                                                         **spec_static)),
                              ('clf', SVC(**svm_static))])
         average = 'binary' if len(label2ix) == 2 else 'micro'
