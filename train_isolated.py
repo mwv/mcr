@@ -123,7 +123,7 @@ def _extract_features(fname, fs, encoder):
 #                   'constant')
 #     return part.flatten()
 
-
+_feat_cache = {}
 def extract_features_at(fname, fs, start, stacksize, encoder, n_noise_fr=0,
                         buffer_length=0.5):
     """Extract features at a certain point in time.
@@ -150,31 +150,36 @@ def extract_features_at(fname, fs, start, stacksize, encoder, n_noise_fr=0,
     ndarray
         vector of size stacksize * encoder.n_features
     """
-    # load signal and pad for buffer size
-    sig = _load_wav(fname, fs=fs)
-    sig = np.pad(sig,
-                 (int(buffer_length*fs), int(buffer_length*fs)),
-                 'constant')
+    key = (fname, fs, start, stacksize, tuple(sorted(encoder.config.items())),
+           n_noise_fr, buffer_length)
+    if not key in _feat_cache:
+        # load signal and pad for buffer size
+        sig = _load_wav(fname, fs=fs)
+        sig = np.pad(sig,
+                     (int(buffer_length*fs), int(buffer_length*fs)),
+                     'constant')
 
-    # get noise from start of file
-    noise = _extract_noise(fname, fs, n_noise_fr, encoder)
+        # get noise from start of file
+        noise = _extract_noise(fname, fs, n_noise_fr, encoder)
 
-    # determine buffer and call start and end points in smp and fr
-    buffer_len_smp = int(buffer_length * fs)
-    buffer_len_fr = int(buffer_len_smp / encoder.fshift)
+        # determine buffer and call start and end points in smp and fr
+        buffer_len_smp = int(buffer_length * fs)
+        buffer_len_fr = int(buffer_len_smp / encoder.fshift)
 
-    stacksize_smp = int(stacksize * encoder.fshift)
-    call_start_smp = int(start * fs) + buffer_len_smp
-    call_end_smp = call_start_smp + stacksize_smp
+        stacksize_smp = int(stacksize * encoder.fshift)
+        call_start_smp = int(start * fs) + buffer_len_smp
+        call_end_smp = call_start_smp + stacksize_smp
 
-    # the part we're gonna cut out: [buffer + call + buffer]
-    slice_start_smp = call_start_smp - buffer_len_smp
-    slice_end_smp = call_end_smp + buffer_len_smp
-    sig_slice = sig[slice_start_smp: slice_end_smp]
+        # the part we're gonna cut out: [buffer + call + buffer]
+        slice_start_smp = call_start_smp - buffer_len_smp
+        slice_end_smp = call_end_smp + buffer_len_smp
+        sig_slice = sig[slice_start_smp: slice_end_smp]
 
-    # extract features and cut out call
-    feat = encoder.transform(sig_slice, noise_profile=noise)
-    return feat[buffer_len_fr: buffer_len_fr + stacksize].flatten()
+        # extract features and cut out call
+        feat = encoder.transform(sig_slice, noise_profile=noise)
+        _feat_cache[key] = \
+            feat[buffer_len_fr: buffer_len_fr + stacksize].flatten()
+    return _feat_cache[key]
 
 
 class IdentityTransform(TransformerMixin, BaseEstimator):
