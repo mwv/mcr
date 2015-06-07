@@ -173,7 +173,7 @@ def extract_features_at(fname, fs, start, stacksize, encoder, n_noise_fr=0,
     sig_slice = sig[slice_start_smp: slice_end_smp]
 
     # extract features and cut out call
-    feat = encoder.transform(sig_slice, noise_mask=noise)
+    feat = encoder.transform(sig_slice, noise_profile=noise)
     return feat[buffer_len_fr: buffer_len_fr + stacksize].flatten()
 
 
