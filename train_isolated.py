@@ -40,6 +40,7 @@ except ValueError:
 import inspect
 import warnings
 from functools import partial
+import operator
 
 import pandas as pd
 import numpy as np
@@ -123,7 +124,6 @@ def _extract_features(fname, fs, encoder):
 #                   'constant')
 #     return part.flatten()
 
-_feat_cache = {}
 def extract_features_at(fname, fs, start, stacksize, encoder, n_noise_fr=0,
                         buffer_length=0.1):
     """Extract features at a certain point in time.
@@ -150,37 +150,31 @@ def extract_features_at(fname, fs, start, stacksize, encoder, n_noise_fr=0,
     ndarray
         vector of size stacksize * encoder.n_features
     """
-    key = (fname, fs, start, stacksize, tuple(sorted(encoder.config.items())),
-           n_noise_fr, buffer_length)
-    if not key in _feat_cache:
-        # load signal and pad for buffer size
-        sig = _load_wav(fname, fs=fs)
-        sig = np.pad(sig,
-                     (int(buffer_length*fs), int(buffer_length*fs)),
-                     'constant')
+    # load signal and pad for buffer size
+    sig = _load_wav(fname, fs=fs)
+    sig = np.pad(sig,
+                 (int(buffer_length*fs), int(buffer_length*fs)),
+                 'constant')
 
-        # get noise from start of file
-        noise = _extract_noise(fname, fs, n_noise_fr, encoder)
+    # get noise from start of file
+    noise = _extract_noise(fname, fs, n_noise_fr, encoder)
 
-        # determine buffer and call start and end points in smp and fr
-        buffer_len_smp = int(buffer_length * fs)
-        buffer_len_fr = int(buffer_len_smp / encoder.fshift)
+    # determine buffer and call start and end points in smp and fr
+    buffer_len_smp = int(buffer_length * fs)
+    buffer_len_fr = int(buffer_len_smp / encoder.fshift)
 
-        stacksize_smp = int(stacksize * encoder.fshift)
-        call_start_smp = int(start * fs) + buffer_len_smp
-        call_end_smp = call_start_smp + stacksize_smp
+    stacksize_smp = int(stacksize * encoder.fshift)
+    call_start_smp = int(start * fs) + buffer_len_smp
+    call_end_smp = call_start_smp + stacksize_smp
 
-        # the part we're gonna cut out: [buffer + call + buffer]
-        slice_start_smp = call_start_smp - buffer_len_smp
-        slice_end_smp = call_end_smp + buffer_len_smp
-        sig_slice = sig[slice_start_smp: slice_end_smp]
+    # the part we're gonna cut out: [buffer + call + buffer]
+    slice_start_smp = call_start_smp - buffer_len_smp
+    slice_end_smp = call_end_smp + buffer_len_smp
+    sig_slice = sig[slice_start_smp: slice_end_smp]
 
-        # extract features and cut out call
-        feat = encoder.transform(sig_slice, noise_profile=noise)
-        _feat_cache[key] = \
-            feat[buffer_len_fr: buffer_len_fr + stacksize].flatten()
-    return _feat_cache[key]
-
+    # extract features and cut out call
+    feat = encoder.transform(sig_slice, noise_profile=noise)
+    return feat[buffer_len_fr: buffer_len_fr + stacksize].flatten()
 
 class IdentityTransform(TransformerMixin, BaseEstimator):
     def fit(self, X, y=None):
@@ -189,7 +183,7 @@ class IdentityTransform(TransformerMixin, BaseEstimator):
     def transform(self, X, y=None):
         return X
 
-
+_feat_cache = {}
 class FeatureLoader(TransformerMixin, BaseEstimator):
     """
     Wrapper to load audio and extract features in a single transformer
@@ -219,12 +213,12 @@ class FeatureLoader(TransformerMixin, BaseEstimator):
 
         self.fs = spec_kwargs['fs']
 
-        self.n_jobs = n_jobs
-
         self.set_encoder()
 
         self.stacksize = stacksize
         self.normalize = normalize
+
+        self.n_jobs = n_jobs
 
     def set_encoder(self):
         self.encoder = Spectral(**self.spec_kwargs)
@@ -273,25 +267,24 @@ class FeatureLoader(TransformerMixin, BaseEstimator):
         else:
             super(FeatureLoader, self).__setattr__(attr, value)
 
+    def get_key(self):
+        return tuple(sorted(self.get_params().items()))
+
     def get_specs(self, X):
-        r = np.empty((X.shape[0], self.n_features*self.stacksize))
-        r = Parallel(n_jobs=self.n_jobs, verbose=verbose)(
-            delayed(extract_features_at)(X[ix][0], self.fs,
-                                         float(X[ix][1]),
-                                         self.stacksize, self.encoder,
-                                         self.noise_fr)
-            for ix in xrange(X.shape[0])
-        )
-        # for ix in xrange(X.shape[0]):
-        #     fname, start = X[ix][0], int(X[ix][1]*self.fs/self.encoder.fshift)
-        #     spec = _extract_spec(fname, self.fs, self.encoder)
-        #     part = spec[start: start+self.stacksize]
-        #     # pad if too short
-        #     part = np.pad(part,
-        #                   ((0, self.stacksize-part.shape[0]),
-        #                    (0, 0)),
-        #                   'constant')
-        #     r[ix] = part.flatten()
+        key = self.get_key()
+        if key in _feat_cache:
+            return _feat_cache[key]
+        else:
+            r = Parallel(n_jobs=self.n_jobs, verbose=verbose)(
+                delayed(extract_features_at)(
+                    X[ix][0], self.fs,
+                    float(X[ix][1]),
+                    self.stacksize,
+                    self.encoder,
+                    self.noise_fr
+                )
+                for ix in xrange(X.shape[0])
+            )
         return r
 
     def fit(self, X, y=None):
@@ -417,13 +410,24 @@ if __name__ == '__main__':
             param_grid['features__{}'.format(k)] = v
 
     with verb_print('preloading spectral features', verbose=verbose):
-        for params in ParameterGrid(spec_dynamic):
+        n_iter = reduce(operator.mul, map(len, spec_dynamic))
+        for ix, params in enumerate(ParameterGrid(spec_dynamic)):
+            print 'combination {}/{}'.format(ix, n_iter)
+            print 'number of keys in _wav_cache:', len(_wav_cache)
+            print 'number of keys in _noise_cache:', len(_noise_cache)
+            print 'number of keys in _feat_cache:', len(_feat_cache)
             fl = FeatureLoader(stacksize=stacksize0,
                                normalize=normalize0,
                                n_jobs=n_jobs,
                                **spec_static)
             fl.set_params(**params)
-            fl.fit(X)
+            for fname in X[:,0]:
+                _load_wav(fname, fs=fl.encoder.fs)
+                _extract_noise(fname, fl.encoder.fs, fl.noise_fr,
+                               fl.encoder)
+            s = fl.get_specs(X)
+            key = tuple(sorted(fl.get_params().items()))
+            _feat_cache[key] = s
 
     with verb_print('preparing pipeline', verbose=verbose):
         pipeline = Pipeline([('features', FeatureLoader(stacksize=stacksize0,
