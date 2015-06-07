@@ -82,9 +82,27 @@ def _load_wav(fname, fs=16000):
             return sig
     return _wav_cache[key]
 
+_noise_cache = {}
+def _extract_noise(fname, fs, n_noise_fr, encoder):
+    cfg = (('fs', encoder.fs),
+           ('window_length', encoder.window_length),
+           ('window_shift', encoder.window_shift),
+           ('nfft', encoder.nfft),
+           ('remove_dc', encoder.remove_dc),
+           ('medfilt_t', encoder.medfilt_t),
+           ('medfilt_s', encoder.medfilt_s),
+           ('pre_emph', encoder.pre_emph))
+    key = (fname, cfg)
+    if not key in _noise_cache:
+        sig = _load_wav(fname, fs=fs)
+        nsamples = (n_noise_fr + 2) * encoder.fshift
+        spec = encoder.get_spectrogram(sig[:nsamples])[2:, :]
+        noise = spec.mean(axis=0)
+        _noise_cache[key] = noise
+    return _noise_cache[key]
 
 _spec_cache = {}
-def _extract_spec(fname, fs, encoder):
+def _extract_features(fname, fs, encoder):
     key = (fname, tuple(sorted(encoder.config.items())))
     # key = (fname, encoder.config)
     if not key in _spec_cache:
@@ -96,14 +114,67 @@ def _extract_spec(fname, fs, encoder):
             return spec
     return _spec_cache[key]
 
-def extract_spec_at(fname, fs, start, stacksize, encoder):
-    spec = _extract_spec(fname, fs, encoder)
-    part = spec[start: start + stacksize]
-    part = np.pad(part,
-                  ((0, stacksize-part.shape[0]),
-                   (0,0)),
-                  'constant')
-    return part.flatten()
+# def extract_spec_at(fname, fs, start, stacksize, encoder):
+#     spec = _extract_spec(fname, fs, encoder)
+#     part = spec[start: start + stacksize]
+#     part = np.pad(part,
+#                   ((0, stacksize-part.shape[0]),
+#                    (0,0)),
+#                   'constant')
+#     return part.flatten()
+
+
+def extract_features_at(fname, fs, start, stacksize, encoder, n_noise_fr=0,
+                        buffer_length=0.5):
+    """Extract features at a certain point in time.
+
+    Parameters
+    ----------
+    fname : string
+        filename
+    fs : int
+        samplerate
+    start : float
+        start position in seconds
+    stacksize : int
+        number of feature frames to extract starting from start
+    encoder : Spectral object
+        feature extractor
+    n_noise_fr : int
+        number of noise frames
+    buffer_length : float
+        pre- and post-padding time in seconds
+
+    Returns
+    -------
+    ndarray
+        vector of size stacksize * encoder.n_features
+    """
+    # load signal and pad for buffer size
+    sig = _load_wav(fname, fs=fs)
+    sig = np.pad(sig,
+                 (int(buffer_length*fs), int(buffer_length*fs)),
+                 'constant')
+
+    # get noise from start of file
+    noise = _extract_noise(fname, fs, n_noise_fr, encoder)
+
+    # determine buffer and call start and end points in smp and fr
+    buffer_len_smp = int(buffer_length * fs)
+    buffer_len_fr = int(buffer_len_smp / encoder.fshift)
+
+    stacksize_smp = int(stacksize * encoder.fshift)
+    call_start_smp = int(start * fs) + buffer_len_smp
+    call_end_smp = call_start_smp + stacksize_smp
+
+    # the part we're gonna cut out: [buffer + call + buffer]
+    slice_start_smp = call_start_smp - buffer_len_smp
+    slice_end_smp = call_end_smp + buffer_len_smp
+    sig_slice = sig[slice_start_smp: slice_end_smp]
+
+    # extract features and cut out call
+    feat = encoder.transform(sig_slice, noise_mask=noise)
+    return feat[buffer_len_fr: buffer_len_fr + stacksize].flatten()
 
 
 class IdentityTransform(TransformerMixin, BaseEstimator):
@@ -138,6 +209,9 @@ class FeatureLoader(TransformerMixin, BaseEstimator):
         self.spec_kwargs = spec_kwargs
         if not 'fs' in self.spec_kwargs:
             self.spec_kwargs['fs'] = 16000
+        self.noise_fr = self.spec_kwargs.get('noise_fr', 0)
+        self.spec_kwargs['noise_fr'] = 0
+
         self.fs = spec_kwargs['fs']
 
         self.n_jobs = n_jobs
@@ -197,10 +271,12 @@ class FeatureLoader(TransformerMixin, BaseEstimator):
     def get_specs(self, X):
         r = np.empty((X.shape[0], self.n_features*self.stacksize))
         r = Parallel(n_jobs=self.n_jobs, verbose=verbose)(
-            delayed(extract_spec_at)(X[ix][0], self.fs,
-                                     int(X[ix][1]*self.fs/self.encoder.fshift),
-                                     self.stacksize, self.encoder)
-            for ix in xrange(X.shape[0]))
+            delayed(extract_features_at)(X[ix][0], self.fs,
+                                         float(X[ix][1]),
+                                         self.stacksize, self.encoder,
+                                         self.noise_fr)
+            for ix in xrange(X.shape[0])
+        )
         # for ix in xrange(X.shape[0]):
         #     fname, start = X[ix][0], int(X[ix][1]*self.fs/self.encoder.fshift)
         #     spec = _extract_spec(fname, self.fs, self.encoder)
