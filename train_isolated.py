@@ -40,6 +40,7 @@ import inspect
 import warnings
 from functools import partial
 import operator
+from collections import Counter
 
 import pandas as pd
 import numpy as np
@@ -255,7 +256,9 @@ class FeatureLoader(TransformerMixin, BaseEstimator):
     def get_specs(self, X):
         key = self.get_key()
         if key in _feat_cache:
-            return _feat_cache[key]
+            r = np.vstack((_feat_cache[key][(X[ix, 0], X[ix, 1])]
+                           for ix in xrange(X.shape[0])))
+            # return _feat_cache[key]
         else:
             r = np.vstack(Parallel(n_jobs=self.n_jobs, verbose=verbose)(
                 delayed(extract_features_at)(
@@ -360,7 +363,7 @@ if __name__ == '__main__':
     with verb_print('reading data file', verbose=verbose):
         df = pd.read_csv(data_file)
         X = df[['filename', 'start', 'end']].values
-        calls = df['call']
+        calls = df['call'].values
         label2ix = {k:i for i, k in enumerate(np.unique(calls))}
         y = np.array([label2ix[call] for call in calls])
 
@@ -419,10 +422,11 @@ if __name__ == '__main__':
                 _load_wav(fname, fs=fl.encoder.fs)
                 _extract_noise(fname, fl.encoder.fs, params.get('noise_fr', 0),
                                fl.encoder)
-            s = fl.get_specs(X)
-            assert (s.shape[0] == X.shape[0])
-            key = tuple(sorted(fl.get_params().items()))
-            _feat_cache[key] = s
+            X_ = fl.get_specs(X)
+            assert (X_.shape[0] == X.shape[0])
+            key = fl.get_key()
+            _feat_cache[key] = {(X[ix, 0], float(X[ix, 1])): X_[ix]
+                                for ix in xrange(X.shape[0])}
 
     with verb_print('preparing pipeline', verbose=verbose):
         pipeline = Pipeline([('features', FeatureLoader(stacksize=stacksize0,
@@ -436,6 +440,9 @@ if __name__ == '__main__':
                            n_jobs=n_jobs,
                            verbose=0 if verbose else 0)
     with verb_print('training classifier', verbose=verbose):
+        print 'X.shape', X.shape
+        print 'y.shape', y.shape
+        print dict(Counter(y))
         clf.fit(X, y)
     with verb_print('saving output to {}'.format(output_file),
                     verbose=verbose):
