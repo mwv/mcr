@@ -102,6 +102,7 @@ def _extract_noise(fname, fs, noise_fr, encoder):
         nsamples = (noise_fr + 2) * encoder.fshift
         spec = encoder.get_spectrogram(sig[:nsamples])[2:, :]
         noise = spec.mean(axis=0)
+        noise = np.clip(noise, 1e-4, np.inf)
         _noise_cache[key] = noise
     return _noise_cache[key]
 
