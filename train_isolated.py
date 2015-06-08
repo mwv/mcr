@@ -395,6 +395,8 @@ if __name__ == '__main__':
             param_grid['features__noise_fr'] = noise_fr
 
         spec_dynamic, spec_static = split_config(spec_kwargs)
+        if isinstance(noise_fr, list):
+            spec_dynamic['noise_fr'] = noise_fr
         for k, v in spec_dynamic.iteritems():
             param_grid['features__{}'.format(k)] = v
 
@@ -414,7 +416,7 @@ if __name__ == '__main__':
 
             for fname in X[:,0]:
                 _load_wav(fname, fs=fl.encoder.fs)
-                _extract_noise(fname, fl.encoder.fs, noise_fr,
+                _extract_noise(fname, fl.encoder.fs, params.get('noise_fr', 0),
                                fl.encoder)
             s = fl.get_specs(X)
             assert (s.shape[0] == X.shape[0])
