@@ -132,35 +132,35 @@ if __name__ == '__main__':
         for k, v in spec_dynamic.iteritems():
             param_grid['features__{}'.format(k)] = v
 
-    with verb_print('preloading spectral features', verbose=verbose):
-        n_iter = reduce(operator.mul, map(len, spec_dynamic.values()))
-        for ix, params in enumerate(ParameterGrid(spec_dynamic)):
-            print 'combination {}/{}'.format(ix, n_iter)
-            print params
-            print n_jobs
-            fl = load_isolated.FeatureLoader(
-                stacksize=stacksize0,
-                normalize=normalize0,
-                noise_fr=noise_fr,
-                n_jobs=n_jobs,
-                verbose=True,
-                **spec_static
-            )
-            fl.set_params(**params)
+    # with verb_print('preloading audio', verbose=verbose):
+    #     n_iter = reduce(operator.mul, map(len, spec_dynamic.values()))
+    #     for ix, params in enumerate(ParameterGrid(spec_dynamic)):
+    #         print 'combination {}/{}'.format(ix, n_iter)
+    #         print params
+    #         print n_jobs
+    #         fl = load_isolated.FeatureLoader(
+    #             stacksize=stacksize0,
+    #             normalize=normalize0,
+    #             noise_fr=noise_fr,
+    #             n_jobs=n_jobs,
+    #             verbose=True,
+    #             **spec_static
+    #         )
+    #         fl.set_params(**params)
 
-            for fname in X[:,0]:
-                load_isolated._load_wav(fname, fs=fl.encoder.fs)
-                load_isolated._extract_noise(
-                    fname, fl.encoder.fs, params.get('noise_fr', 0),
-                    fl.encoder
-                )
-            X_ = fl.get_specs(X)
-            assert (X_.shape[0] == X.shape[0])
-            key = fl.get_key()
-            load_isolated._feat_cache[key] = {
-                (X[ix, 0], float(X[ix, 1])): X_[ix]
-                for ix in xrange(X.shape[0])
-            }
+    #         for fname in X[:,0]:
+    #             load_isolated._load_wav(fname, fs=fl.encoder.fs)
+    #             load_isolated._extract_noise(
+    #                 fname, fl.encoder.fs, params.get('noise_fr', 0),
+    #                 fl.encoder
+    #             )
+    #         X_ = fl.get_specs(X)
+    #         assert (X_.shape[0] == X.shape[0])
+    #         key = fl.get_key()
+    #         load_isolated._feat_cache[key] = {
+    #             (X[ix, 0], float(X[ix, 1])): X_[ix]
+    #             for ix in xrange(X.shape[0])
+    #         }
 
     n_grid_values = reduce(operator.mul, map(len, param_grid.values()))
     average_method = 'binary' if len(label2ix) == 2 else 'micro'
