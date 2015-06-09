@@ -24,6 +24,16 @@ from contextlib import contextmanager
 
 import toml
 
+from functools import partial
+import sklearn.metrics
+
+def make_f1_score(average):
+    func = partial(sklearn.metrics.f1_score, average=average)
+    func.__name__ = 'f1_score'
+    func.__doc__ = sklearn.metrics.f1_score.__doc__
+    return sklearn.metrics.make_scorer(func)
+
+
 @contextmanager
 def verb_print(msg, verbose=False):
     """Helper for verbose printing with timing around pieces of code.

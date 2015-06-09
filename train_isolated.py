@@ -36,292 +36,18 @@ try:
 except ValueError:
     pass
 
-import inspect
-import warnings
-from functools import partial
 import operator
-from collections import Counter
 
 import pandas as pd
 import numpy as np
 np.seterr(all='raise')
-
-from scikits.audiolab import wavread
-from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from sklearn.grid_search import GridSearchCV, ParameterGrid
-from sklearn.metrics import make_scorer, f1_score
-from sklearn.base import TransformerMixin, BaseEstimator
 from sklearn.pipeline import Pipeline
 from sklearn.svm import SVC
 import joblib
-from joblib import Parallel, delayed
 
-from spectral import Spectral
-from zca import ZCA
-
-from util import load_config, verb_print
-
-USE_AUDIO_CACHE = True
-USE_SPEC_CACHE = True
-USE_DISK_CACHE = True
-
-_wav_cache = {}
-def _load_wav(fname, fs=16000):
-    """
-    Optionally memoized audio loader.
-    """
-    key = fname
-    if not key in _wav_cache:
-        sig, fs_, _ = wavread(fname)
-        if fs != fs_:
-            raise ValueError('sampling rate should be {0}, not {1}. '
-                             'please resample.'.format(fs, fs_))
-        if len(sig.shape) > 1:
-            warnings.warn('stereo audio: merging channels')
-            sig = (sig[:, 0] + sig[:, 1]) / 2
-        if USE_AUDIO_CACHE:
-            _wav_cache[key] = sig
-        else:
-            return sig
-    return _wav_cache[key]
-
-_noise_cache = {}
-def _extract_noise(fname, fs, noise_fr, encoder):
-    cfg = (('fs', encoder.fs),
-           ('window_length', encoder.window_length),
-           ('window_shift', encoder.window_shift),
-           ('nfft', encoder.nfft),
-           ('remove_dc', encoder.remove_dc),
-           ('medfilt_t', encoder.medfilt_t),
-           ('medfilt_s', encoder.medfilt_s),
-           ('pre_emph', encoder.pre_emph))
-    key = (fname, cfg)
-    if noise_fr == 0:
-        _noise_cache[key] = None
-    elif not key in _noise_cache:
-        sig = _load_wav(fname, fs=fs)
-        nsamples = (noise_fr + 2) * encoder.fshift
-        spec = encoder.get_spectrogram(sig[:nsamples])[2:, :]
-        noise = spec.mean(axis=0)
-        noise = np.clip(noise, 1e-4, np.inf)
-        _noise_cache[key] = noise
-    return _noise_cache[key]
-
-
-def extract_features_at(fname, fs, start, stacksize, encoder, noise_fr=0,
-                        buffer_length=0.1):
-    """Extract features at a certain point in time.
-
-    Parameters
-    ----------
-    fname : string
-        filename
-    fs : int
-        samplerate
-    start : float
-        start position in seconds
-    stacksize : int
-        number of feature frames to extract starting from start
-    encoder : Spectral object
-        feature extractor
-    noise_fr : int
-        number of noise frames
-    buffer_length : float
-        pre- and post-padding time in seconds
-
-    Returns
-    -------
-    ndarray
-        vector of size stacksize * encoder.n_features
-    """
-    # load signal and pad for buffer size
-    sig = _load_wav(fname, fs=fs)
-    sig = np.pad(sig,
-                 (int(buffer_length*fs), int(buffer_length*fs)),
-                 'constant')
-
-    # get noise from start of file
-    noise = _extract_noise(fname, fs, noise_fr, encoder)
-
-    # determine buffer and call start and end points in smp and fr
-    buffer_len_smp = int(buffer_length * fs)
-    buffer_len_fr = int(buffer_len_smp / encoder.fshift)
-
-    stacksize_smp = int(stacksize * encoder.fshift)
-    call_start_smp = int(start * fs) + buffer_len_smp
-    call_end_smp = call_start_smp + stacksize_smp
-
-    # the part we're gonna cut out: [buffer + call + buffer]
-    slice_start_smp = call_start_smp - buffer_len_smp
-    slice_end_smp = call_end_smp + buffer_len_smp
-    sig_slice = sig[slice_start_smp: slice_end_smp]
-
-    # extract features and cut out call
-    feat = encoder.transform(sig_slice, noise_profile=noise)
-    return feat[buffer_len_fr: buffer_len_fr + stacksize].flatten()
-
-class IdentityTransform(TransformerMixin, BaseEstimator):
-    def fit(self, X, y=None):
-        return self
-
-    def transform(self, X, y=None):
-        return X
-
-_feat_cache = {}
-class FeatureLoader(TransformerMixin, BaseEstimator):
-    """
-    Wrapper to load audio and extract features in a single transformer
-
-    Parameters
-    ----------
-    fs : int
-        sampling rate of the audio in Hz
-    stacksize : int
-        number of consecutive frames to stack in a single stimulus
-    normalize : {None, 'minmax', 'mvn', 'zca'}
-        normalization method to use
-    """
-
-    normalization_methods = [None, 'minmax', 'mvn', 'zca']
-
-    # arguments to spectral constructor, if any of these are changed
-    # the spectral encoder needs to be rebuilt
-    spec_arg_names = inspect.getargspec(Spectral.__init__).args[1:]
-
-    def __init__(self, stacksize=40, normalize='mvn', noise_fr=0,
-                 n_jobs=1, **spec_kwargs):
-        self.spec_kwargs = spec_kwargs
-        if not 'fs' in self.spec_kwargs:
-            self.spec_kwargs['fs'] = 16000
-        self.fs = spec_kwargs['fs']
-        self.noise_fr = noise_fr
-
-        self.set_encoder()
-
-        self.stacksize = stacksize
-        self.normalize = normalize
-
-        self.n_jobs = n_jobs
-
-    def set_encoder(self):
-        self.encoder = Spectral(**self.spec_kwargs)
-        self.n_features = self.encoder.n_features
-
-    @property
-    def normalize(self):
-        return self._normalize
-
-    @normalize.setter
-    def normalize(self, v):
-        if not v in self.normalization_methods:
-            raise ValueError(
-                'normalization method must be one of {}, not {}'
-                .format('[{}]'.format(
-                    ','.join(map(str, self.normalization_methods))),
-                        v))
-        self._normalize = v
-        if v == 'minmax':
-            self.normalizer = MinMaxScaler(feature_range=(0,1))
-        elif v == 'mvn':
-            self.normalizer = StandardScaler()
-        elif v == 'zca':
-            self.normalizer = ZCA()
-        else:
-            self.normalizer = IdentityTransform()
-
-    def get_params(self, deep=True):
-        p = {k: getattr(self, k) for k in self.spec_arg_names}
-        p['normalize'] = self.normalize
-        p['fs'] = self.fs
-        p['stacksize'] = self.stacksize
-        return p
-
-    def __getattr__(self, attr):
-        if attr in self.spec_arg_names:
-            return getattr(self.encoder, attr)
-        else:
-            raise AttributeError('{0!r} object has no attribute {1!r}'
-                                 .format(self.__class__, attr))
-
-    def __setattr__(self, attr, value):
-        if attr in self.spec_arg_names:
-            self.spec_kwargs[attr] = value
-            self.set_encoder()
-        else:
-            super(FeatureLoader, self).__setattr__(attr, value)
-
-    def get_key(self):
-        return tuple(sorted(self.get_params().items()))
-
-    def get_specs(self, X):
-        key = self.get_key()
-        if key in _feat_cache:
-            r = np.vstack((_feat_cache[key][(X[ix, 0], X[ix, 1])]
-                           for ix in xrange(X.shape[0])))
-            # return _feat_cache[key]
-        else:
-            r = np.vstack(Parallel(n_jobs=self.n_jobs, verbose=verbose)(
-                delayed(extract_features_at)(
-                    X[ix][0], self.fs,
-                    float(X[ix][1]),
-                    self.stacksize,
-                    self.encoder,
-                    self.noise_fr
-                )
-                for ix in xrange(X.shape[0])
-            ))
-        return r
-
-    def fit(self, X, y=None):
-        """Load audio and optionally estimate mean and covar
-
-        Parameters
-        ----------
-        X : ndarray with columns
-            filename, start, end
-        y :
-        """
-        r = self.get_specs(X)
-        self.normalizer.fit(r)
-        return self
-
-    def transform(self, X, y=None):
-        """Load audio and perform feature extraction.
-
-        Parameters
-        ----------
-        X : ndarray
-        """
-        r = self.get_specs(X)
-        return self.normalizer.transform(r)
-
-    def fit_transform(self, X, y=None):
-        r = self.get_specs(X)
-        return self.normalizer.fit_transform(r)
-
-
-def split_config(kwargs):
-    """ split configuration into dynamic (multiple values) and static
-    (single value) dicts
-    """
-    dynamic = {}
-    static = {}
-    for k, v  in kwargs.iteritems():
-        if k == 'medfilt_s':
-            if isinstance(v[0], list):
-                dynamic[k] = map(tuple, v)
-                static[k] = tuple(v[0])
-            else:
-                dynamic[k] = (tuple(v),)
-                static[k] = tuple(v)
-        else:
-            if isinstance(v, list):
-                dynamic[k] = v
-                static[k] = v[0]
-            else:
-                dynamic[k] = (v,)
-                static[k] = v
-    return dynamic, static
+from util import load_config, verb_print, make_f1_score
+import load_isolated
 
 
 if __name__ == '__main__':
@@ -360,14 +86,16 @@ if __name__ == '__main__':
     n_jobs = int(args['n_jobs'])
     verbose = args['verbose']
 
-    with verb_print('reading data file', verbose=verbose):
+    with verb_print('reading stimuli from {}'.format(data_file),
+                    verbose=verbose):
         df = pd.read_csv(data_file)
         X = df[['filename', 'start', 'end']].values
         calls = df['call'].values
         label2ix = {k:i for i, k in enumerate(np.unique(calls))}
         y = np.array([label2ix[call] for call in calls])
 
-    with verb_print('loading configuration', verbose=verbose):
+    with verb_print('loading configuration from {}'.format(config_file),
+                    verbose=verbose):
         config = load_config(config_file)
 
         stacksize = config['features']['nframes']
@@ -386,7 +114,7 @@ if __name__ == '__main__':
             normalize0 = normalize
 
         svm_kwargs = config['svm']
-        svm_dynamic, svm_static = split_config(svm_kwargs)
+        svm_dynamic, svm_static = load_isolated.split_config(svm_kwargs)
         for k, v in svm_dynamic.iteritems():
             param_grid['clf__{}'.format(k)] = v
 
@@ -398,7 +126,7 @@ if __name__ == '__main__':
         if isinstance(noise_fr, list):
             param_grid['features__noise_fr'] = noise_fr
 
-        spec_dynamic, spec_static = split_config(spec_kwargs)
+        spec_dynamic, spec_static = load_isolated.split_config(spec_kwargs)
         if isinstance(noise_fr, list):
             spec_dynamic['noise_fr'] = noise_fr
         for k, v in spec_dynamic.iteritems():
@@ -408,44 +136,62 @@ if __name__ == '__main__':
         n_iter = reduce(operator.mul, map(len, spec_dynamic.values()))
         for ix, params in enumerate(ParameterGrid(spec_dynamic)):
             print 'combination {}/{}'.format(ix, n_iter)
-            print 'number of keys in _wav_cache:', len(_wav_cache)
-            print 'number of keys in _noise_cache:', len(_noise_cache)
-            print 'number of keys in _feat_cache:', len(_feat_cache)
-            fl = FeatureLoader(stacksize=stacksize0,
-                               normalize=normalize0,
-                               noise_fr=noise_fr,
-                               n_jobs=n_jobs,
-                               **spec_static)
+            print params
+            print n_jobs
+            fl = load_isolated.FeatureLoader(
+                stacksize=stacksize0,
+                normalize=normalize0,
+                noise_fr=noise_fr,
+                n_jobs=n_jobs,
+                verbose=True,
+                **spec_static
+            )
             fl.set_params(**params)
 
             for fname in X[:,0]:
-                _load_wav(fname, fs=fl.encoder.fs)
-                _extract_noise(fname, fl.encoder.fs, params.get('noise_fr', 0),
-                               fl.encoder)
+                load_isolated._load_wav(fname, fs=fl.encoder.fs)
+                load_isolated._extract_noise(
+                    fname, fl.encoder.fs, params.get('noise_fr', 0),
+                    fl.encoder
+                )
             X_ = fl.get_specs(X)
             assert (X_.shape[0] == X.shape[0])
             key = fl.get_key()
-            _feat_cache[key] = {(X[ix, 0], float(X[ix, 1])): X_[ix]
-                                for ix in xrange(X.shape[0])}
+            load_isolated._feat_cache[key] = {
+                (X[ix, 0], float(X[ix, 1])): X_[ix]
+                for ix in xrange(X.shape[0])
+            }
 
+    n_grid_values = reduce(operator.mul, map(len, param_grid.values()))
+    average_method = 'binary' if len(label2ix) == 2 else 'micro'
+    scorer = make_f1_score(average_method)
     with verb_print('preparing pipeline', verbose=verbose):
-        pipeline = Pipeline([('features', FeatureLoader(stacksize=stacksize0,
-                                                        normalize=normalize0,
-                                                        **spec_static)),
-                             ('clf', SVC(**svm_static))])
-        average = 'binary' if len(label2ix) == 2 else 'micro'
-        clf = GridSearchCV(pipeline, param_grid=param_grid,
-                           scoring=make_scorer(partial(f1_score,
-                                                       average=average)),
-                           n_jobs=n_jobs,
-                           verbose=0 if verbose else 0)
+        pipeline = Pipeline(
+            [('features', load_isolated.FeatureLoader(
+                stacksize=stacksize0,
+                normalize=normalize0,
+                verbose=False,
+                **spec_static)),
+             ('clf', SVC(verbose=False, **svm_static))])
+
+        if n_grid_values == 1:
+            clf = pipeline
+            clf.set_params(**iter(ParameterGrid(param_grid)).next())
+        else:
+            clf = GridSearchCV(pipeline, param_grid=param_grid,
+                               scoring=scorer,
+                               n_jobs=n_jobs,
+                               verbose=10 if verbose else 0)
+
     with verb_print('training classifier', verbose=verbose):
-        print 'X.shape', X.shape
-        print 'y.shape', y.shape
-        print dict(Counter(y))
         clf.fit(X, y)
     with verb_print('saving output to {}'.format(output_file),
                     verbose=verbose):
-        joblib.dump(clf, output_file, compress=9)
-    print clf.best_params_
-    print clf.best_score_
+        joblib.dump((clf, label2ix), output_file, compress=9)
+    if n_grid_values == 1:
+        y_pred = clf.predict(X)
+        print clf.get_params()
+        print scorer._score_func(y, y_pred)
+    else:
+        print clf.best_params_
+        print clf.best_score_
