@@ -22,6 +22,7 @@ from time import time
 import sys
 from contextlib import contextmanager
 
+import numpy as np
 import toml
 
 from functools import partial
@@ -57,3 +58,25 @@ def load_config(filename):
     with open(filename) as fid:
         config = toml.loads(fid.read())
     return config
+
+def pretty_cm(cm, labels, hide_zeros=False, offset=''):
+    """pretty print for confusion matrices"""
+    valuewidth = int(np.log10(np.clip(cm, 1, np.inf)).max()) + 1
+    columnwidth = max(map(len, labels)+[valuewidth]) + 1
+    empty_cell = " " * columnwidth
+    s = ''
+    # header
+    s += offset + empty_cell
+    for label in labels:
+        s += "{1:>{0}s}".format(columnwidth, label)
+    s += '\n\n'
+    # rows
+    for i, label1 in enumerate(labels):
+        s += offset + '{1:{0}s}'.format(columnwidth, label1)
+        for j in range(len(labels)):
+            cell = '{1:{0}d}'.format(columnwidth, cm[i, j])
+            if hide_zeros:
+                cell = cell if cm[i, j] != 0 else empty_cell
+            s += cell
+        s += '\n'
+    return s
