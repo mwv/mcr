@@ -209,4 +209,5 @@ if __name__ == '__main__':
             print_dataset(X_train, output + '.train')
             print_dataset(X_test, output + '.test')
         else:
+            X = df[['filename', 'start', 'end', 'call']].values
             print_dataset(X, output)
