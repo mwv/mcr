@@ -37,11 +37,13 @@ except ValueError:
     pass
 
 import operator
+from pprint import pformat
 
 import pandas as pd
 import numpy as np
 np.seterr(all='raise')
 from sklearn.grid_search import GridSearchCV, ParameterGrid
+from sklearn.metrics import classification_report
 from sklearn.pipeline import Pipeline
 from sklearn.svm import SVC
 import joblib
@@ -98,69 +100,37 @@ if __name__ == '__main__':
                     verbose=verbose):
         config = load_config(config_file)
 
-        stacksize = config['features']['nframes']
-        normalize = config['features']['normalize']
+        features_params = load_isolated.ensure_list(config['features'])
+        clf_params = load_isolated.ensure_list(config['svm'])
 
         param_grid = {}
-        if isinstance(stacksize, list):
-            stacksize0 = stacksize[0]
-            param_grid['features__stacksize'] = stacksize
-        else:
-            stacksize0 = stacksize
-        if isinstance(normalize, list):
-            normalize0 = normalize[0]
-            param_grid['features__normalize'] = normalize
-        else:
-            normalize0 = normalize
-
-        svm_kwargs = config['svm']
-        svm_dynamic, svm_static = load_isolated.split_config(svm_kwargs)
-        for k, v in svm_dynamic.iteritems():
+        for k, v in features_params.iteritems():
+            param_grid['features__{}'.format(k)] = v
+        for k, v in clf_params.iteritems():
             param_grid['clf__{}'.format(k)] = v
 
-        spec_kwargs = config['features']['spectral']
-        spec_kwargs.update(config['features']['preprocessing'])
+    with verb_print('preloading audio', verbose=verbose):
+        n_iter = reduce(operator.mul, map(len, features_params.values()))
+        fl = load_isolated.FeatureLoader()
+        for fname in X[:, 0]:
+            fl._load_wav(fname)
+        wav_cache = fl.wav_cache
 
-        noise_fr = spec_kwargs.get('noise_fr', 0)
-        del spec_kwargs['noise_fr']
-        if isinstance(noise_fr, list):
-            param_grid['features__noise_fr'] = noise_fr
+        feat_cache = {}
+        noise_cache = {}
+        for ix, params in enumerate(ParameterGrid(features_params)):
+            print 'combination {}/{}'.format(ix, n_iter)
+            print params
+            fl = load_isolated.FeatureLoader()
+            fl.set_params(**params)
+            fl._fill_noise_cache(X)
+            noise_cache.update(fl.noise_cache)
+            fl.get_specs(X)
+            feat_cache.update(fl.feat_cache)
 
-        spec_dynamic, spec_static = load_isolated.split_config(spec_kwargs)
-        if isinstance(noise_fr, list):
-            spec_dynamic['noise_fr'] = noise_fr
-        for k, v in spec_dynamic.iteritems():
-            param_grid['features__{}'.format(k)] = v
-
-    # with verb_print('preloading audio', verbose=verbose):
-    #     n_iter = reduce(operator.mul, map(len, spec_dynamic.values()))
-    #     for ix, params in enumerate(ParameterGrid(spec_dynamic)):
-    #         print 'combination {}/{}'.format(ix, n_iter)
-    #         print params
-    #         print n_jobs
-    #         fl = load_isolated.FeatureLoader(
-    #             stacksize=stacksize0,
-    #             normalize=normalize0,
-    #             noise_fr=noise_fr,
-    #             n_jobs=n_jobs,
-    #             verbose=True,
-    #             **spec_static
-    #         )
-    #         fl.set_params(**params)
-
-    #         for fname in X[:,0]:
-    #             load_isolated._load_wav(fname, fs=fl.encoder.fs)
-    #             load_isolated._extract_noise(
-    #                 fname, fl.encoder.fs, params.get('noise_fr', 0),
-    #                 fl.encoder
-    #             )
-    #         X_ = fl.get_specs(X)
-    #         assert (X_.shape[0] == X.shape[0])
-    #         key = fl.get_key()
-    #         load_isolated._feat_cache[key] = {
-    #             (X[ix, 0], float(X[ix, 1])): X_[ix]
-    #             for ix in xrange(X.shape[0])
-    #         }
+    if verbose:
+        print 'PARAMETERGRID:'
+        print pformat(param_grid)
 
     n_grid_values = reduce(operator.mul, map(len, param_grid.values()))
     average_method = 'binary' if len(label2ix) == 2 else 'micro'
@@ -168,12 +138,11 @@ if __name__ == '__main__':
     with verb_print('preparing pipeline', verbose=verbose):
         pipeline = Pipeline(
             [('features', load_isolated.FeatureLoader(
-                stacksize=stacksize0,
-                normalize=normalize0,
                 verbose=False,
-                **spec_static)),
-             ('clf', SVC(verbose=False, **svm_static))])
-
+                wav_cache=wav_cache,
+                noise_cache=noise_cache,
+                feat_cache=feat_cache)),
+             ('clf', SVC(verbose=False))])
         if n_grid_values == 1:
             clf = pipeline
             clf.set_params(**iter(ParameterGrid(param_grid)).next())
@@ -181,17 +150,27 @@ if __name__ == '__main__':
             clf = GridSearchCV(pipeline, param_grid=param_grid,
                                scoring=scorer,
                                n_jobs=n_jobs,
-                               verbose=10 if verbose else 0)
+                               refit=False,
+                               verbose=0 if verbose else 0)
 
     with verb_print('training classifier', verbose=verbose):
         clf.fit(X, y)
-    with verb_print('saving output to {}'.format(output_file),
-                    verbose=verbose):
-        joblib.dump((clf, label2ix), output_file, compress=9)
     if n_grid_values == 1:
         y_pred = clf.predict(X)
         print clf.get_params()
         print scorer._score_func(y, y_pred)
+        joblib.dump((clf, None, label2ix), output_file, compress=9)
     else:
-        print clf.best_params_
-        print clf.best_score_
+        print 'BEST PARAMETERS at {}:'.format(clf.best_score_)
+        print pformat(clf.best_params_)
+        clf_ = Pipeline(
+            [('features', load_isolated.FeatureLoader(
+                verbose=False,
+                n_jobs=n_jobs)),
+             ('clf', SVC(verbose=False))])
+        clf_.set_params(**clf.best_params_)
+        clf_.fit(X, y)
+        print classification_report(y, clf_.predict(X))
+        clf_.steps[0][1].clear_cache()
+        joblib.dump((clf_, clf.grid_scores_, label2ix),
+                    output_file, compress=9)
