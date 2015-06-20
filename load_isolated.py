@@ -103,7 +103,10 @@ class IdentityTransform(TransformerMixin, BaseEstimator):
         return X
 
 class FeatureLoader(TransformerMixin, BaseEstimator):
-    def __init__(self, stacksize=40, normalize='mvn', n_noise_fr=0,
+    def __init__(self,
+                 stacksize=40,
+                 normalize='mvn',
+                 n_noise_fr=0,
                  fs=16000,
                  window_length=0.050,
                  window_shift=0.010,
@@ -266,7 +269,7 @@ class FeatureLoader(TransformerMixin, BaseEstimator):
     def _fill_feat_cache(self, X_keys):
         sigs = [self._load_wav(fname) for fname, _ in X_keys]
         noises = [self._extract_noise(fname) for fname, _ in X_keys]
-        p = Parallel(n_jobs=self.n_jobs, verbose=0)(
+        p = Parallel(n_jobs=self.n_jobs, verbose=5)(
             delayed(extract_features_at)(
                 sig, noise, start, self.stacksize, self.encoder)
             for (fname, start), sig, noise in izip(X_keys, sigs, noises)
