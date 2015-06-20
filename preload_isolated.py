@@ -17,6 +17,15 @@
 
 from __future__ import division
 
+# and now for an ugly hack around the incomprehensible path manipulations
+# on puck1 and puck2
+import sys
+try:
+    sys.path.remove('/cm/shared/apps/python-anaconda/lib/python2.7/'
+                    'site-packages/spectral-0.1.5-py2.7-linux-x86_64.egg')
+except ValueError:
+    pass
+
 import os
 import os.path as path
 import operator
