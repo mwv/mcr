@@ -1,4 +1,0 @@
-/resources/*.test
-/resources/*.train
-*.pyc
-/results/
