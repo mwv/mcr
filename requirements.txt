@@ -1,0 +1,12 @@
+numpy>=1.10
+scipy>=0.16.1
+pandas>=0.17
+joblib>=0.8.4
+toml>=0.9.1
+scikit-learn>=0.16,<0.19
+cvxopt>=1.1.8
+-e git+https://github.com/mblondel/lightning.git#egg=lightning-master
+-e git+https://github.com/pystruct/pystruct.git#egg=pystruct-master
+-e git+https://github.com/mwv/spectral.git#egg=spectral-master
+-e git+https://github.com/mwv/vad.git#egg=vad-master
+-e git+https://github.com/mwv/zca.git#egg=zca-master
