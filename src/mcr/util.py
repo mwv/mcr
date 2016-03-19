@@ -1,13 +1,12 @@
 """util: miscellaneous helper functions
 """
-from __future__ import division
+from __future__ import division, print_function
 
 from time import time
 import sys
 from contextlib import contextmanager
 import string
-from functools import partial
-from itertools import imap, product, tee
+from itertools import product, tee
 from math import ceil, log
 
 import numpy as np
@@ -75,13 +74,13 @@ def verb_print(msg, verbose=False):
     if verbose:
         t0 = time()
         msg = msg + '...'
-        print msg,
+        print(msg, end='')
         sys.stdout.flush()
     try:
         yield
     finally:
         if verbose:
-            print 'done. time: {0:.3f}s'.format(time() - t0)
+            print('done. time: {0:.3f}s'.format(time() - t0))
             sys.stdout.flush()
 
 
@@ -135,16 +134,16 @@ def roll_array(arr, stacksize):
     ))
     return np.hstack(
         np.roll(arr, -i, 0)
-        for i in xrange(stacksize)
+        for i in range(stacksize)
     )[:arr.shape[0] - stacksize + 1]
 
 
 def encode_symbol_range(high,
                         symbols=string.ascii_lowercase,
-                        join=partial(string.join, '')):
+                        join=lambda s: ''.join(s)):
     return dict(
         enumerate(
-            imap(
+            map(
                 join,
                 product(
                     *tee(symbols,

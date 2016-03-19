@@ -30,13 +30,19 @@ and  CALL_LOCATION_RECALL    = TP/(TP+FN)
 
 """
 
-from __future__ import division
+from __future__ import division, print_function
 
 import numpy as np
 import pandas as pd
 from collections import namedtuple
 from itertools import dropwhile, takewhile
 from sklearn.metrics import classification_report
+
+try:
+    range = range
+    input = raw_input
+except NameError:
+    pass
 
 from mcr.util import verb_print
 
@@ -50,7 +56,7 @@ class Span(object):
         return Span(max(self.start, other.start),
                     min(self.end, other.end))
 
-    def __len__(self):
+    def length(self):
         return self.end - self.start
 
 class Interval(object):
@@ -145,6 +151,42 @@ def call_score(gold, pred, tolerance):
 
     return TP/(TP+FP), TP/(TP+FN)
 
+def call_score_onset_only(gold, pred, tolerance):
+    TP = FP = FN = 0
+    for filename in gold.filename.unique():
+        pred_starts = pred[pred.filename == filename].start.values
+        pred_labels = pred[pred.filename == filename].label.values
+        for _, row in gold[(gold.label != 'SIL') &
+                           (gold.filename == filename)].iterrows():
+            query_start = row.start
+            query_label = row.label
+
+            match_ix = find_nearest_ix(pred_starts, query_start)
+            match_start, match_label = pred_starts[match_ix], pred_labels[match_ix]
+
+            if abs(match_start - query_start) < tolerance \
+               and match_label == query_label:
+                TP += 1
+            else:
+                FN += 1
+    for filename in pred.filename.unique():
+        gold_starts = gold[gold.filename == filename].start.values
+        gold_labels = gold[gold.filename == filename].label.values
+        for _, row in pred[(pred.label != 'SIL') &
+                           (pred.filename == filename)].iterrows():
+            query_start = row.start
+            query_label = row.label
+
+            match_ix = find_nearest_ix(gold_starts, query_start)
+            match_start, match_label = gold_starts[match_ix], gold_labels[match_ix]
+
+            if not abs(match_start - query_start) < tolerance or \
+               match_label != query_label:
+                FP += 1
+            else:
+                pass
+    return TP/(TP+FP), TP/(TP+FN)
+
 
 def utterance_ops(XA, XB):
     """Return the number of opcodes needed for transforming sequence XA into XB.
@@ -175,8 +217,8 @@ def utterance_ops(XA, XB):
     # 3 = vertical - insertion
     # 4 = horizontal - deletion
 
-    for i in xrange(1, mA+1):
-        for j in xrange(1, mB+1):
+    for i in range(1, mA+1):
+        for j in range(1, mB+1):
             if XA[i-1] == XB[j-1]:
                 M[i, j] = M[i-1, j-1]
                 B[i, j] = 1
@@ -318,10 +360,10 @@ def frame_score(gold, pred, winshift):
         pred_file = pred[pred.filename == filename]
         assert len(pred_file) > 0
         # make sure there are no gaps in either gold or predicted ann.
-        assert all(np.isclose(gold_file.iloc[i].end, gold_file.iloc[i+1].start)
-                    for i in xrange(len(gold_file)-1))
-        assert all(np.isclose(pred_file.iloc[i].end, pred_file.iloc[i+1].start)
-                   for i in xrange(len(pred_file)-1))
+        # assert all(np.isclose(gold_file.iloc[i].end, gold_file.iloc[i+1].start)
+        #             for i in range(len(gold_file)-1))
+        # assert all(np.isclose(pred_file.iloc[i].end, pred_file.iloc[i+1].start)
+        #            for i in range(len(pred_file)-1))
 
         gold_ivals = [Interval(row.label, Span(row.start, row.end))
                       for _, row in gold_file.iterrows()]
@@ -345,13 +387,13 @@ def frame_score(gold, pred, winshift):
         pred_ivals[0].span.start = span.start
         pred_ivals[-1].span.end = span.end
 
-        n_values = int(len(span) / winshift)
+        n_values = int(span.length() / winshift)
         y_gold = np.zeros(n_values, dtype=np.uint8) - 1
         y_pred = np.zeros(n_values, dtype=np.uint8) - 1
 
         gold_ptr = 0
         pred_ptr = 0
-        for val_ptr in xrange(n_values):
+        for val_ptr in range(n_values):
             t = val_ptr * winshift
             if t > gold_ivals[gold_ptr].span.end:
                 gold_ptr += 1
@@ -450,32 +492,42 @@ if __name__ == '__main__':
                     .format(tolerance), verbose):
         prec, rec = call_score(gold_df, pred_df, tolerance)
 
+    with verb_print('calculating onset call score (tolerance={:.3f})'
+                    .format(tolerance), verbose):
+        prec_onset, rec_onset = call_score_onset_only(gold_df, pred_df, tolerance)
+
     with verb_print('calculating frame score (window shift={:.3f})'
                     .format(winshift), verbose):
         frame_report = frame_score(gold_df, pred_df, 0.01)
 
-    print
-    print '='*53
-    print 'UTTERANCE:'
-    print '   WER: {wer:.2f}%, MER: {mer:.2f}%'.format(
+    print()
+    print(  '='*53 )
+    print( 'UTTERANCE:' )
+    print(  '   WER: {wer:.2f}%, MER: {mer:.2f}%'.format(
         wer=oc.WER*100,
         mer=oc.MER*100
     )
-    print '   [H={H},D={D},S={S},I={I},N={N}]'.format(
+    )
+    print(  '   [H={H},D={D},S={S},I={I},N={N}]'.format(
         H=oc.H,
         D=oc.D,
         S=oc.S,
         I=oc.I,
         N=oc.N
-    )
+    ) )
 
-    print '='*53
-    print 'CALL:'
-    print '   precision: {0:.3f}, recall: {1:.3f}, f-score: {2:.3f}'.format(
+    print('='*53)
+    print('CALL:')
+    print('   precision:         {0:.3f}, recall:         {1:.3f}, f-score:'
+          '         {2:.3f}'.format(
         prec, rec, 2*prec*rec/(prec+rec)
-    )
+    ))
+    print('   precision (onset): {0:.3f}, recall (onset): {1:.3f}, f-score '
+          '(onset): {2:.3f}'.format(
+        prec_onset, rec_onset, 2*prec_onset*rec_onset/(prec_onset+rec_onset)
+    ))
 
-    print '='*53
-    print 'FRAME:'
-    print frame_report
-    print '='*53
+    print(  '='*53 )
+    print(  'FRAME:' )
+    print(  frame_report )
+    print(  '='*53 )
