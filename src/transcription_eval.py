@@ -35,7 +35,7 @@ from __future__ import division, print_function
 import numpy as np
 import pandas as pd
 from collections import namedtuple
-from itertools import dropwhile, takewhile
+from itertools import dropwhile, takewhile, chain
 from sklearn.metrics import classification_report
 
 try:
@@ -45,24 +45,6 @@ except NameError:
     pass
 
 from mcr.util import verb_print
-
-
-class Span(object):
-    def __init__(self, start, end):
-        self.start = start
-        self.end = end
-
-    def intersect(self, other):
-        return Span(max(self.start, other.start),
-                    min(self.end, other.end))
-
-    def length(self):
-        return self.end - self.start
-
-class Interval(object):
-    def __init__(self, label, span):
-        self.label = label
-        self.span = span
 
 
 def find_nearest_ix(arr, query):
@@ -345,84 +327,32 @@ def utterance_score(gold, pred):
 def frame_score(gold, pred, winshift):
     gold_labels = set(gold.label.unique())
     pred_labels = set(pred.label.unique())
-    assert (len(pred_labels) - len(gold_labels) == 0)
+    assert len(pred_labels) == len(gold_labels)
 
     label2ix = {
         label: ix
         for ix, label in enumerate(sorted(gold_labels))
     }
-
-    y_gold_all = None
-    y_pred_all = None
-
-    for filename in gold.filename:
-        gold_file = gold[gold.filename == filename]
-        pred_file = pred[pred.filename == filename]
-        assert len(pred_file) > 0
-        # make sure there are no gaps in either gold or predicted ann.
-        # assert all(np.isclose(gold_file.iloc[i].end, gold_file.iloc[i+1].start)
-        #             for i in range(len(gold_file)-1))
-        # assert all(np.isclose(pred_file.iloc[i].end, pred_file.iloc[i+1].start)
-        #            for i in range(len(pred_file)-1))
-
-        gold_ivals = [Interval(row.label, Span(row.start, row.end))
-                      for _, row in gold_file.iterrows()]
-        pred_ivals = [Interval(row.label, Span(row.start, row.end))
-                      for _, row in pred_file.iterrows()]
-        gold_span = Span(gold_ivals[0].span.start, gold_ivals[-1].span.end)
-        pred_span = Span(pred_ivals[0].span.start, pred_ivals[-1].span.end)
-        span = gold_span.intersect(pred_span)
-
-        # truncate lists
-        strip = lambda x: list(
-            takewhile(lambda ival: ival.span.start < span.end,
-                      dropwhile(lambda ival: ival.span.end < span.start, x)
-            )
-        )
-        gold_span = strip(gold_ivals)
-        pred_span = strip(pred_ivals)
-
-        gold_ivals[0].span.start = span.start
-        gold_ivals[-1].span.end = span.end
-        pred_ivals[0].span.start = span.start
-        pred_ivals[-1].span.end = span.end
-
-        n_values = int(span.length() / winshift)
-        y_gold = np.zeros(n_values, dtype=np.uint8) - 1
-        y_pred = np.zeros(n_values, dtype=np.uint8) - 1
-
-        gold_ptr = 0
-        pred_ptr = 0
-        for val_ptr in range(n_values):
-            t = val_ptr * winshift
-            if t > gold_ivals[gold_ptr].span.end:
-                gold_ptr += 1
-                if gold_ptr >= len(gold_ivals):
-                    raise ValueError('gold_ptr advanced too far')
-            if t > pred_ivals[pred_ptr].span.end:
-                pred_ptr += 1
-            gold_label = gold_ivals[gold_ptr].label
-            pred_label = pred_ivals[pred_ptr].label
-            y_gold[val_ptr] = label2ix[gold_label]
-            y_pred[val_ptr] = label2ix[pred_label]
-        if y_gold_all is None:
-            y_gold_all = y_gold
-            y_pred_all = y_pred
-        else:
-            y_gold_all = np.hstack((y_gold_all, y_gold))
-            y_pred_all = np.hstack((y_pred_all, y_pred))
+    to_labels = lambda df: np.fromiter(
+        (chain.from_iterable([label2ix[row.label]] * row.nframes_q
+                             for _, row in df.iterrows())),
+        dtype=np.uint8
+    )
+    y_gold = to_labels(gold)
+    y_pred = to_labels(pred)
 
     return classification_report(
-        y_gold_all, y_pred_all,
+        y_gold, y_pred,
         target_names=sorted(gold_labels)
     )
 
 
 def quantize_calls(df, winshift):
-    # convert to frames
-    df['start_q'] = np.round(df['start'].values / winshift)*winshift
-    df['end_q'] = np.round(df['end'].values / winshift)*winshift
-
+    quantize_series = lambda ser: np.round(ser.values / winshift).astype(np.uint64)
+    start_q = quantize_series(df.start)
+    end_q = quantize_series(df.end)
+    df['nframes_q'] = end_q - start_q
+    return df
 
 if __name__ == '__main__':
     import argparse
@@ -444,6 +374,13 @@ if __name__ == '__main__':
             metavar='PREDFILE',
             nargs=1,
             help='file with predicted stimuli'
+        )
+        parser.add_argument(
+            '--frame-scores',
+            action='store_true',
+            dest='frame_scores',
+            default=False,
+            help='also compute frame scores'
         )
         parser.add_argument(
             '-t', '--tolerance',
@@ -475,6 +412,7 @@ if __name__ == '__main__':
     pred_file = args['predfile'][0]
     tolerance = float(args['tolerance'])
     winshift = float(args['winshift'])
+    frame_scores = args['frame_scores']
     verbose = args['verbose']
 
     with verb_print('reading gold stimuli from {}'.format(gold_file), verbose):
@@ -496,9 +434,10 @@ if __name__ == '__main__':
                     .format(tolerance), verbose):
         prec_onset, rec_onset = call_score_onset_only(gold_df, pred_df, tolerance)
 
-    with verb_print('calculating frame score (window shift={:.3f})'
-                    .format(winshift), verbose):
-        frame_report = frame_score(gold_df, pred_df, 0.01)
+    if frame_scores:
+        with verb_print('calculating frame score (window shift={:.3f})'
+                        .format(winshift), verbose):
+            frame_report = frame_score(gold_df, pred_df, 0.01)
 
     print()
     print(  '='*53 )
@@ -528,6 +467,7 @@ if __name__ == '__main__':
     ))
 
     print(  '='*53 )
-    print(  'FRAME:' )
-    print(  frame_report )
-    print(  '='*53 )
+    if frame_scores:
+        print(  'FRAME:' )
+        print(  frame_report )
+        print(  '='*53 )
