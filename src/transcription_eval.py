@@ -62,12 +62,16 @@ def find_nearest_ix(arr, query):
 
 def call_score(gold, pred, tolerance):
     TP = FP = FN = 0
-    for filename in gold.filename.unique():
-        pred_starts = pred[pred.filename == filename].start.values
-        pred_ends = pred[pred.filename == filename].end.values
-        pred_labels = pred[pred.filename == filename].label.values
-        for _, row in gold[(gold.label != 'SIL') &
-                           (gold.filename == filename)].iterrows():
+    pred_calls = pred[pred.label != 'SIL']
+    gold_calls = gold[gold.label != 'SIL']
+    for filename in gold_calls.filename.unique():
+        pred_starts = pred_calls[pred_calls.filename == filename].start.values
+        pred_ends = pred_calls[pred_calls.filename == filename].end.values
+        pred_labels = pred_calls[pred_calls.filename == filename].label.values
+        for _, row in gold_calls[gold_calls.filename == filename].iterrows():
+            if len(pred_starts) == 0: # No predicted calls
+                FN += 1
+                continue
             query_start = row.start
             query_end = row.end
             query_label = row.label
@@ -97,12 +101,15 @@ def call_score(gold, pred, tolerance):
                 continue
 
             FN += 1
-    for filename in pred.filename.unique():
-        gold_starts = gold[gold.filename == filename].start.values
-        gold_ends = gold[gold.filename == filename].end.values
-        gold_labels = gold[gold.filename == filename].label.values
-        for _, row in pred[(pred.label != 'SIL') &
-                           (pred.filename == filename)].iterrows():
+    for filename in pred_calls.filename.unique():
+        gold_starts = gold_calls[gold_calls.filename == filename].start.values
+        gold_ends = gold_calls[gold_calls.filename == filename].end.values
+        gold_labels = gold_calls[gold_calls.filename == filename].label.values
+        for _, row in pred_calls[pred_calls.filename == filename].iterrows():
+            if len(gold_starts) == 0: # No gold calls
+                FP += 1
+                continue
+
             query_start = row.start
             query_end = row.end
             query_label = row.label
@@ -135,15 +142,19 @@ def call_score(gold, pred, tolerance):
 
 def call_score_onset_only(gold, pred, tolerance):
     TP = FP = FN = 0
-    for filename in gold.filename.unique():
-        pred_starts = pred[pred.filename == filename].start.values
-        pred_labels = pred[pred.filename == filename].label.values
-        for _, row in gold[(gold.label != 'SIL') &
-                           (gold.filename == filename)].iterrows():
+    pred_calls = pred[pred.label != 'SIL']
+    gold_calls = gold[gold.label != 'SIL']
+    for filename in gold_calls.filename.unique():
+        pred_starts = pred_calls[pred_calls.filename == filename].start.values
+        pred_labels = pred_calls[pred_calls.filename == filename].label.values
+        for _, row in gold_calls[gold_calls.filename == filename].iterrows():
             query_start = row.start
             query_label = row.label
 
             match_ix = find_nearest_ix(pred_starts, query_start)
+            if match_ix >= len(pred_starts):
+                FN += 1
+                continue
             match_start, match_label = pred_starts[match_ix], pred_labels[match_ix]
 
             if abs(match_start - query_start) < tolerance \
@@ -151,11 +162,10 @@ def call_score_onset_only(gold, pred, tolerance):
                 TP += 1
             else:
                 FN += 1
-    for filename in pred.filename.unique():
-        gold_starts = gold[gold.filename == filename].start.values
-        gold_labels = gold[gold.filename == filename].label.values
-        for _, row in pred[(pred.label != 'SIL') &
-                           (pred.filename == filename)].iterrows():
+    for filename in pred_calls.filename.unique():
+        gold_starts = gold_calls[gold_calls.filename == filename].start.values
+        gold_labels = gold_calls[gold_calls.filename == filename].label.values
+        for _, row in pred_calls[pred_calls.filename == filename].iterrows():
             query_start = row.start
             query_label = row.label
 
